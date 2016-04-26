@@ -41,26 +41,40 @@ module Env : Env_type =
     (* Creates a closure from an expression and the environment it's
        defined in *)
     let close (exp: expr) (env: env) : value =
-      failwith "close not implemented" ;;
+      Closure (exp,env) ;;
 
     (* Looks up the value of a variable in the environment *)
-    let lookup (env: env) (varname: varid) : value =
-      failwith "lookup not implemented" ;;
+    let rec lookup (env: env) (varname: varid) : value =
+      match env with
+      | [] -> Val Unassigned
+      | (v,r)::tl -> if varname = v then !r else lookup tl varname ;;
 
     (* Returns a new environment just like env except that it maps the
        variable varid to loc *)
-    let extend (env: env) (varname: varid) (loc: value ref) : env =
-      failwith "extend not implemented" ;;
+    let rec extend (env: env) (varname: varid) (loc: value ref) : env =
+      match env with
+      | [] -> [(varname,loc)]
+      | (v,r)::tl -> if v = varname then (v,loc)::tl else (v,r)::(extend tl varname loc)
+       ;; 
 
     (* Returns a printable string representation of an environment *)
-    let env_to_string (env: env) : string =
-      failwith "env_to_string not implemented" ;;
+    let rec env_to_string (env: env) : string =
+      let rec gen_string e =
+        match e with
+        | [] -> ""
+        | (v,r)::tl -> "[" ^ v ^ "," ^ (value_to_string !r) ^ "] " in
+      gen_string env and
 
     (* Returns a printable string representation of a value; the flag
        printenvp determines whether to include the environment in the
        string representation when called on a closure *)
-    let value_to_string ?(printenvp : bool = true) (v: value) : string =
-      failwith "value_to_string not implemented" ;;
+    value_to_string ?(printenvp : bool = true) (v: value) : string =
+      match v with
+      | Val e -> "Val" ^ (exp_to_string e)
+      | Closure(exp,env) -> if printenvp
+                            then "Closure(" ^ (exp_to_string exp) ^ "," ^ (env_to_string env) ^ ")"
+                            else "Closure(" ^ (exp_to_string exp) ^ ",env)"
+      ;;
   end
 ;;
 	     
@@ -69,11 +83,96 @@ module Env : Env_type =
    initial implementation, we just convert the expression unchanged to
    a value and return it. *)
 
-  
 let eval_t exp _env = Env.Val exp ;;
-let eval_s _ = failwith "eval_s not implemented" ;;
-let eval_d _ = failwith "eval_d not implemented" ;;
+
+let uneval uop = 
+  match uop with
+  | Unop("~-",Num e) -> Num (~- e)
+  | _ -> raise (EvalError "Invalid Unop") ;;
+
+let bineval (bop: expr) : expr =
+  match bop with
+  | Binop(v,Num e1,Num e2) -> (match v with
+                              | "+" -> Num (e1 + e2)
+                              | "-" -> Num (e1 - e2)
+                              | "*" -> Num (e1 * e2)
+                              | "=" -> Bool (e1 = e2)
+                              | "<" -> Bool (e1 < e2)
+                              | _ -> raise (EvalError "Invalid Binop Operation"))
+  | _ -> raise (EvalError "Invalid Binop") ;;
+
+let condeval (cond: expr) : expr =
+  match cond with
+  | Conditional(Bool e1,e2,e3) -> if e1 then e2 else e3
+  | _ -> raise (EvalError "Invalid Conditional") ;;
+(*
+let rec receval (recf: expr) : expr =
+  match recf with
+  | Letrec(v,e1,e2) -> receval (subst v e1 (eval e2))
+  | _ -> raise (EvalError "Invalid Conditional")
+*)
+let appeval (app: expr) : expr =
+  match app with
+  | App(Fun(v,e1),e2) -> subst v e2 e1
+  | _ -> raise (EvalError "Invalid App") ;;
+
+let eval_s exp _env = 
+  let rec eval ex =
+    match ex with
+    | Var _ -> raise (EvalError "Unbound Variable")
+    | Num _ -> ex
+    | Bool _ -> ex
+    | Unop(v,e) -> uneval (eval e)
+    | Binop(v,e1,e2) -> bineval (Binop (v,(eval e1),(eval e2)))
+    | Conditional(e1,e2,e3) -> eval (condeval (Conditional ((eval e1),(eval e2),(eval e3))))
+    | Fun(v,e) -> ex
+    | Let(v,e1,e2) -> eval (App(Fun(v,e2),e1))
+    | Letrec(v,e1,e2) -> let e' = (Letrec(v, e1,Var v)) in
+                         let e1' = eval (subst v e' e1) in
+                            eval (subst v e1' e2)
+    | Raise -> raise EvalException
+    | Unassigned -> raise (EvalError "Unassigned Value")
+    | App(e1,e2) -> eval (appeval (App ((eval e1),(eval e2)))) in
+  Env.Val (eval exp)
+;;
+
+let extract v =
+  match v with
+  | Env.Val e -> e
+  | Env.Closure(exp,env) -> exp ;;
+  
+
+let appeval_d1 a env =
+  match a with
+  | App(Fun(v,e1),e2) -> e1
+  | _ -> raise (EvalError "Invalid App") ;;
+
+let appeval_d2 a env =
+  match a with
+  | App(Fun(v,e1),e2) -> Env.extend env v (ref (Env.Val e2))
+  | _ -> raise (EvalError "Invalid App") ;;
+
+let eval_d exp env =
+  let rec eval ex en =
+    match ex with
+    | Var v -> let ev = extract (Env.lookup en v) in
+                 if ev = Unassigned then raise (EvalError "Unbound Variable") else ev
+    | Num n -> ex
+    | Bool b -> ex
+    | Unop(v,e) -> uneval (eval e en)
+    | Binop(v,e1,e2) -> bineval (Binop (v,(eval e1 en),(eval e2 en)))
+    | Conditional(e1,e2,e3) -> eval (condeval (Conditional ((eval e1 en),(eval e2 en),(eval e3 en)))) en
+    | Fun(v,e) -> ex
+    | Let(v,e1,e2) -> eval (App(Fun(v,e2),e1)) en
+    | Letrec(v,e1,e2) -> raise (EvalError "Let Rec Not Finished")
+    | Raise -> raise (EvalError "Error Raised")
+    | Unassigned -> Unassigned
+    | App(e1,e2) -> (let app = App ((eval e1 en),(eval e2 en)) in eval (appeval_d1 app en) (appeval_d2 app en)) in
+  Env.Val (eval exp env)
+  ;;
+
+
 let eval_l _ = failwith "eval_l not implemented" ;;
 
-let evaluate = eval_t ;;
+let evaluate = eval_s ;;
 
